@@ -1,0 +1,86 @@
+#!/bin/bash
+
+# NOTE:
+# system python3 is 3.5 which does not support f-Strings
+# we use version 3.9 provided in /software/python-3.9.1
+
+#
+# Get compilers
+#
+source /software/iNTEL/compilers_and_libraries_2018.1.163/linux/bin/compilervars.sh intel64
+
+#
+# Get root directory
+#
+root="$( cd "$( dirname "${BASH_SOURCE[0]}" )/../.." >/dev/null 2>&1 && pwd )"
+
+#
+# Precompile python
+#
+echo "Compile gpt"
+/software/python-3.9.1/bin/python3.9 -m compileall ${root}/lib/gpt
+
+#
+# Create dependencies and download
+#
+dep=${root}/dependencies
+if [ ! -f ${dep}/Grid/build/Grid/libGrid.a ];
+then
+
+	if [ -d ${dep} ];
+	then
+	    echo "$dep already exists ; rm -rf $dep before bootstrapping again"
+	    exit 1
+	fi
+
+	mkdir -p ${dep}
+	cd ${dep}
+
+	#
+	# Lime
+	#
+	wget https://github.com/usqcd-software/c-lime/tarball/master
+	tar xzf master
+	mv usqcd-software-c-lime* lime
+	rm -f master
+	cd lime
+	./autogen.sh
+	CC=icc ./configure
+	make -j 16
+	cd ..
+
+	#
+	# Grid
+	#
+	git clone https://github.com/lehner/Grid.git
+	cd Grid
+	git checkout feature/gpt
+	./bootstrap.sh
+	mkdir build
+	cd build
+	CXX=mpiicpc CXXFLAGS=-fPIC ../configure --disable-openmp --enable-mkl --enable-shm=shmget --enable-simd=AVX2 --enable-comms=mpi-auto --with-lime=${dep}/lime
+	cd Grid
+	make -j 16
+fi
+
+if [ ! -f ${root}/lib/cgpt/build/cgpt.so ];
+then
+	#
+	# cgpt
+	#
+	cd ${root}/lib/cgpt
+	sed -e "s/python3/\/software\/python-3.9.1\/bin\/python3.9/g" make > make_athene2
+	chmod u+x make_athene2
+	./make_athene2 ${root}/dependencies/Grid/build 16
+fi
+
+cd ${root}/tests
+source ${root}/lib/cgpt/build/source.sh
+
+#
+# run tests with 2 ranks
+#
+./run "mpiexec -n 2 /software/python-3.9.1/bin/python3.9" "--mpi 1.1.1.2 --mpi 1.1.2 --mpi_split 1.1.1.2 --mpi_split 1.1.2"
+
+echo "To use:"
+echo "source ${root}/lib/cgpt/build/source.sh"
